@@ -111,9 +111,11 @@ class StopTime(Base):
 
     @classmethod
     def post_process(cls, db, **kwargs):
-        log.debug('{0}.post_process'.format(cls.__name__))
-        cls.populate_shape_dist_traveled(db)
-        # cls.null_out_last_stop_departures(db) ## commented out due to other processes
+        ignore_distance_postprocess = kwargs.get('ignore_distance_postprocess', None)
+        log.debug('{0} {1}.post_process'.format("skip" if ignore_distance_postprocess else "run", cls.__name__))
+        if not ignore_distance_postprocess:
+            cls.populate_shape_dist_traveled(db)
+            # cls.null_out_last_stop_departures(db) ## commented out due to other processes
 
     @classmethod
     def populate_shape_dist_traveled(cls, db):
@@ -122,13 +124,17 @@ class StopTime(Base):
         TODO: assumes feet as the measure ... should make this configurable
         """
         session = db.session()
+        batch_size = config.DEFAULT_BATCH_SIZE
+        total_rows = session.query(func.count(StopTime.shape_id)).scalar()
+
         try:
-            stop_times = session.query(StopTime).order_by(StopTime.trip_id, StopTime.stop_sequence).all()
-            if stop_times:
-                trip_id = "-111"
-                prev_lat = prev_lon = None
-                distance = 0.0
-                count = 0
+            trip_id = "-111"
+            prev_lat = prev_lon = None
+            distance = 0.0
+
+            for offset in range(0, total_rows, batch_size):
+                stop_times = session.query(StopTime).order_by(StopTime.trip_id, StopTime.stop_sequence).offset(offset).limit(batch_size).all()
+
                 for s in stop_times:
                     # step 1: on first iteration or shape change, goto loop again (e.g., need 2 coords to calc distance)
                     if prev_lat is None or trip_id != s.trip_id:
@@ -141,22 +147,18 @@ class StopTime(Base):
                     # step 2: now that we have 2 coords, we can (if missing) calculate the travel distannce
                     # import pdb; pdb.set_trace()
                     if s.shape_dist_traveled is None:
-                        #msg = "calc dist {}: {},{} to {},{}".format(s.shape_pt_sequence, prev_lat, prev_lon, s.shape_pt_lat, s.shape_pt_lon)
-                        #log.debug(msg)
+                        # msg = "calc dist {}: {},{} to {},{}".format(s.shape_pt_sequence, prev_lat, prev_lon, s.shape_pt_lat, s.shape_pt_lon)
+                        # log.debug(msg)
                         distance += util.distance_ft(prev_lat, prev_lon, s.stop.stop_lat, s.stop.stop_lon)
                         s.shape_dist_traveled = distance
-                        count += 0
 
                     # step 3 save off these coords (and distance) for next iteration
                     prev_lat = s.stop.stop_lat
                     prev_lon = s.stop.stop_lon
                     distance = s.shape_dist_traveled
 
-                    # step 4 persist every now and then not to build a big buffer
-                    if count >= 10000:
-                        session.commit()
-                        session.flush()
-                        count = 0
+                session.commit()
+                session.flush()
 
         except Exception as e:
             log.warning(e)

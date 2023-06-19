@@ -18,6 +18,7 @@ def make_kwargs(args):
 
         # less used params
         do_postprocess=not args.ignore_postprocess,
+        ignore_distance_postprocess=args.ignore_distance_postprocess,
         ignore_blocks=args.ignore_blocks,
         tables=args.tables,
         batch_size=args.batch_size
@@ -50,10 +51,13 @@ def get_args(prog_name='gtfsdb-load', do_parse=True):
                         help='create new db tables (note: not currently used in gtfsdb, which always creates tables)')
     parser.add_argument('--current_tables', '-ct', default=False, action='store_true',
                         help="create tables that represent 'current' service (e.g., views)")
+    parser.add_argument('--ignore_distance_postprocess', '-ndp', default=False, action='store_true',
+                        help="don't bother postprocess the models that calculate distances")
     parser.add_argument('--ignore_postprocess', '-np', default=False, action='store_true',
                         help="don't run any postprocess model routines (will leave some tables empty ... but will load raw gtfs data)")
     parser.add_argument('--ignore_blocks', '-nb', default=False, action='store_true',
                         help="don't bother populating the derrived block table")
+
     if do_parse:
         args = parser.parse_args()
         kwargs = make_kwargs(args)

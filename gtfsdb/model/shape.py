@@ -1,6 +1,5 @@
 from geoalchemy2 import Geometry
-from sqlalchemy import Column, Integer, Numeric, String
-
+from sqlalchemy import Column, Integer, Numeric, String, func
 from gtfsdb import config, util
 from gtfsdb.model.base import Base
 
@@ -78,11 +77,10 @@ class Shape(Base):
 
     @classmethod
     def post_process(cls, db, **kwargs):
-        """
-        routines to run after db is loaded
-        """
-        log.debug('{0}.post_process'.format(cls.__name__))
-        cls.populate_shape_dist_traveled(db)
+        ignore_distance_postprocess = kwargs.get('ignore_distance_postprocess', None)
+        log.debug('{0} {1}.post_process'.format("skip" if ignore_distance_postprocess else "run", cls.__name__))
+        if not ignore_distance_postprocess:
+            cls.populate_shape_dist_traveled(db)
 
     @classmethod
     def populate_shape_dist_traveled(cls, db):
@@ -91,13 +89,17 @@ class Shape(Base):
         TODO: assumes feet as the measure ... should make this configurable
         """
         session = db.session()
+        batch_size = config.DEFAULT_BATCH_SIZE
+        total_rows = session.query(func.count(Shape.shape_id)).scalar()
+
         try:
-            shapes = session.query(Shape).order_by(Shape.shape_id, Shape.shape_pt_sequence).all()
-            if shapes:
-                shape_id = "-111"
-                prev_lat = prev_lon = None
-                distance = 0.0
-                count = 0
+            shape_id = "-111"
+            prev_lat = prev_lon = None
+            distance = 0.0
+
+            for offset in range(0, total_rows, batch_size):
+                shapes = session.query(Shape).order_by(Shape.shape_id, Shape.shape_pt_sequence).offset(offset).limit(batch_size).all()
+
                 for s in shapes:
                     # step 1: on first iteration or shape change, goto loop again (e.g., need 2 coords to calc distance)
                     if prev_lat is None or shape_id != s.shape_id:
@@ -110,22 +112,18 @@ class Shape(Base):
                     # step 2: now that we have 2 coords, we can (if missing) calculate the travel distannce
                     # import pdb; pdb.set_trace()
                     if s.shape_dist_traveled is None:
-                        msg = "calc dist {}: {},{} to {},{}".format(s.shape_pt_sequence, prev_lat, prev_lon, s.shape_pt_lat, s.shape_pt_lon)
-                        #log.debug(msg)
+                        # msg = "calc dist {}: {},{} to {},{}".format(s.shape_pt_sequence, prev_lat, prev_lon, s.shape_pt_lat, s.shape_pt_lon)
+                        # log.debug(msg)
                         distance += util.distance_ft(prev_lat, prev_lon, s.shape_pt_lat, s.shape_pt_lon)
                         s.shape_dist_traveled = distance
-                        count += 1
 
                     # step 3 save off these coords (and distance) for next iteration
                     prev_lat = s.shape_pt_lat
                     prev_lon = s.shape_pt_lon
                     distance = s.shape_dist_traveled
 
-                    # step 4 persist every now and then not to build a big buffer
-                    if count >= 10000:
-                        session.commit()
-                        session.flush()
-                        count = 0
+                session.commit()
+                session.flush()
 
         except Exception as e:
             log.warning(e)
